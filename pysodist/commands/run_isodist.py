@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
+#LAUREL NOTE: THIS IS ALBERT'S NEW VERSION COPIED OVER
 """
 @author: Joey Davis <jhdavis@mit.edu> jhdavislab.org
+@author: Albert Liu
 @version: 0.0.4
 """
 
@@ -30,7 +32,7 @@ def wait(processes, limit, wait_time, logfile=None):
 
 
 def run_fortran_isodist(all_in_files, base_command, threads=1, wait_time=120,
-                        log_suffix='.log', err_suffix='.err', logfile=None):
+                        log_suffix='.log', err_suffix='.err', logfile=None, pythonic=False, corr_atom = None):
     """ Wrapper function to actually execute the fortran code. Should run multiple instances in parallel,
     and should work in Windows and linux.
     :param all_in_files: list of all of the '.in' files to be processed.
@@ -41,6 +43,8 @@ def run_fortran_isodist(all_in_files, base_command, threads=1, wait_time=120,
     :param log_suffix: suffix for the log files saved by isodist.
     :param err_suffix: suffix for the err files saved by isodist.
     :param logfile: path to file to log
+    :param pythonic: use the pythonic version of isodist
+    :param corr_atom: atom in model file for which the correlation groups correspond to
 
     :return: a list of the csv files created as a result of fitting
     """
@@ -51,7 +55,14 @@ def run_fortran_isodist(all_in_files, base_command, threads=1, wait_time=120,
         log('running command: ' + base_command + ' ' + in_file + ' in directory: ' + working_dir, logfile)
         with open(name.split('.in')[0] + log_suffix, 'w') as log_file, open(name.split('.in')[0] + err_suffix,
                                                                             'w') as err_file:
-            processes.add(subprocess.Popen([base_command, in_file], stdout=log_file, stderr=err_file, cwd=working_dir))
+            if pythonic:
+                if corr_atom is not None:
+                    correlate_command = "--correlate"
+                    processes.add(subprocess.Popen([sys.executable, base_command, in_file, correlate_command] + corr_atom, stdout=log_file, stderr=err_file, cwd=working_dir))
+                else:
+                    processes.add(subprocess.Popen([sys.executable, base_command, in_file], stdout=log_file, stderr=err_file, cwd=working_dir))
+            else:
+                processes.add(subprocess.Popen([base_command, in_file], stdout=log_file, stderr=err_file, cwd=working_dir))
             processes = wait(processes, threads, wait_time, logfile=logfile)
 
     wait(processes, 1, wait_time, logfile=logfile)
@@ -124,6 +135,19 @@ def cleanup(output_path, no_compress=False):
         shutil.move(i, base_path + base_name + '_isodist_outputs')
     shutil.move(output_path, base_path + base_name + '_isodist_outputs')
 
+def cleanup_spectra(output_path):
+    """ Used to compress the extracted spectra to a single file that can be re-extracted as necessary
+    :param output_path: path to the output folder
+    """
+    base_path = '/'.join(output_path.split('/')[:-1]) + '/'
+
+    spectra_files = glob.glob(base_path + 'spectra/*.tsv')
+
+    with tarfile.open(base_path + 'spectra/spectra.tar.gz', 'x:gz') as tar:
+        for i in spectra_files:
+            tar.add(i)
+            os.remove(i)
+    return
 
 def compile_isodist_csvs(csv_list, output_csv_name, parsed_pysodist_input=None, logfile=None):
     """ Function to compile and format the individual isodist csvs into a single complete csv file.
@@ -150,7 +174,11 @@ def compile_isodist_csvs(csv_list, output_csv_name, parsed_pysodist_input=None, 
             fixed = file.read().replace(',\n', '\n')
         with open(current_csv, 'w') as file:
             file.write(fixed)
-        parsed_csv = pd.read_csv(current_csv).drop(['tim', 'symb'], axis=1)
+        parsed_csv = pd.read_csv(current_csv)
+        try:
+            parsed_csv = parsed_csv.drop(['tim', 'symb'], axis=1)
+        except:
+            pass
 
         if associate_proteins:
             for row in range(parsed_csv.shape[0]):
@@ -186,7 +214,7 @@ def write_batch(current_peptide, batch_path, spectra_string):
         to_write.write(string + '\n')
 
 
-def write_isodist_input(batch_file_path, atomfile, resfile, niter=5, sigma=100.0, B=1.0, offset=0.01, GW=0.0175):
+def write_isodist_input(batch_file_path, atomfile, resfile, niter=5, sigma=100.0, B=1.0, offset=0.01, GW=0.030):
     """
     Writes an isodist input file
     :param batch_file_path: the path to the batchfile on which to base the input files
@@ -213,7 +241,6 @@ def write_isodist_input(batch_file_path, atomfile, resfile, niter=5, sigma=100.0
         output.write(str(offset) + ' = OFF : initial guess for accuracy offset.\n')
         output.write(str(GW) + ' = GW : initial guess for gaussian width.\n')
     return in_file_path
-
 
 def write_batch_files(batch_df, batch_base_path, batch_size=300, logfile=None):
     """
@@ -251,7 +278,7 @@ def write_batch_files(batch_df, batch_base_path, batch_size=300, logfile=None):
 
 
 def prep_model_files(destination_path, atomfile_path, resfile_path):
-    model_dir = destination_path + '/model_files/'
+    model_dir = destination_path + 'model_files/'
     try:
         os.mkdir(model_dir)
     except OSError:
@@ -294,6 +321,8 @@ def add_args(parser):
     parser.add_argument('--no_compress', action='store_const', const=True, default=False,
                         help='Do not compress isodist log and intermediate processing files.')
     parser.add_argument('--logfile', default=None, help='Optionally provide a path to a logfile to store outputs')
+    parser.add_argument('--pythonic', action='store_true', default=False, help='Analyze using the pythonic pipeline')
+    parser.add_argument('--correlate', nargs = '+', default=None, help='Names of atoms in the residue model that should be considered as correlated')
     return parser
 
 
@@ -349,7 +378,7 @@ def main(args):
         in_file_list.append(write_isodist_input(batch_file_path, atomfile, modelfile))
 
     csv_list = run_fortran_isodist(in_file_list, isodist_executable,
-                                   threads=args.threads, wait_time=args.wait_time, logfile=logfile)
+                                   threads=args.threads, wait_time=args.wait_time, logfile=logfile, pythonic = args.pythonic, corr_atom = args.correlate)
     compile_isodist_csvs(csv_list, output, parsed_pysodist_input=args.pysodist_input, logfile=logfile)
     if args.no_cleanup is False:
         log('cleaning up...', logfile)

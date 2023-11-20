@@ -6,6 +6,7 @@
 
 from datetime import datetime as dt
 import sys
+import os
 
 
 def log(msg, outfile=None):
@@ -18,3 +19,11 @@ def log(msg, outfile=None):
                 f.write(msg + '\n')
         except Exception as e:
             log(e)
+
+def check_dir(dirname, make = False):
+    if not dirname.endswith('/'):
+        dirname = dirname + '/'
+    if make:
+        if not os.path.exists(dirname):
+            os.mkdir(dirname)
+    return dirname

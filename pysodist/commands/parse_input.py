@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 @author: Joey Davis <jhdavis@mit.edu> jhdavislab.org
+@author: Laurel Kinman
 @version: 0.0.4
 """
 
@@ -10,6 +11,7 @@ import argparse
 import os
 import sys
 from pysodist.utils import utilities
+import math
 
 log = utilities.log
 
@@ -41,7 +43,7 @@ def map_int(i):
     return x
 
 
-def extract_skyline_sub(full_dataframe, sample, protein_list=None, isotope='light'):
+def extract_skyline_sub(full_dataframe, sample, protein_list=None, peptide_list = None, isotope='light'):
     """
     extract_skyline_sub takes a full skyline report as input and outputs a filtered dataframe with only those columns
     relevant to the proteins and sample of interest
@@ -50,6 +52,7 @@ def extract_skyline_sub(full_dataframe, sample, protein_list=None, isotope='ligh
     :param sample: string of injection sample name
     :param protein_list: a list of strings of uniprot identifier for particular proteins of interest
     (default None includes all proteins)
+    :param peptide_list: a list of strings of peptide sequences for particular peptides of interest (default None includes all peptides)
     :param isotope: string for filtering output dataframe such that columns from a particular isotope type are included
     (default 'light')
 
@@ -70,6 +73,8 @@ def extract_skyline_sub(full_dataframe, sample, protein_list=None, isotope='ligh
                0] in full_dataframe.columns, 'the provided sample is likely not present. Check the sample name.'
     if not (protein_list is None):
         new_data_frame = new_data_frame[new_data_frame[defs.PROTEIN_GENE_FIELD].isin(protein_list)]
+    if not (peptide_list is None):
+        new_data_frame = new_data_frame[new_data_frame[defs.PEPTIDE_MOD_SEQ_FIELD].isin(peptide_list)]
     return new_data_frame
 
 
@@ -154,8 +159,8 @@ def parse_sub_skyline(skyline_sub_df, sample, q_value=0.00, isotope='light', log
     return pandas_dataframe
 
 
-def parse_skyline(path_to_skyline_csv, output_directory, sample_list=None, protein_list=None, isotope='light',
-                  q_value=0.00, logfile=None):
+def parse_skyline(path_to_skyline_csv, output_directory, sample_list=None, protein_list=None, peptide_list = None, isotope='light',
+                  q_value=0.00, logfile=None, batch_size = None):
     """
     Wrapper function to execute extract_skyline_sub and parse_sub_skyline on all proteins of interest. Useful if there
     are multiple samples in a given report file as it will then generate separate pysodist .tsv files for each of
@@ -167,21 +172,18 @@ def parse_skyline(path_to_skyline_csv, output_directory, sample_list=None, prote
     analysis of all samples)
     :param protein_list: string of protein_gene_field identifier for particular proteins of interest (default None
     includes all proteins)
+    :param peptide_list: string of peptide identifier for particular peptides of interest (default None to include all peptides)
     :param isotope: string for filtering output dataframe such that columns from a particular isotope type are included
     (default 'light')
     :param q_value: float with a optional q_value cutoff to filter your data (default: no filtering)
     :param logfile: path to file to log
+    :param batch_size: if batching by peptide (rather than spectrum), indicate desired batch size here
 
     :return: a list of pandas dataframes with no indices, columns of peptide_modified_sequence, rt_start (seconds),
     rt_end (seconds), charge,
     mz of the light species, protein_IDs, peptide_start_position, peptide_end_position
     """
 
-    output_directory = output_directory.replace('\\', '/')
-    if output_directory[-1] != '/':
-        output_directory += '/'
-    if not (os.path.exists(output_directory)):
-        os.mkdir(output_directory)
     skyline_complete = pd.read_csv(path_to_skyline_csv, sep=',')
     if sample_list is None:
         sample_fields = [' '.join(i.split(defs.SAMPLE_FIND_FIELD)[0].split(' ')[1:]) for i in skyline_complete.columns
@@ -190,7 +192,7 @@ def parse_skyline(path_to_skyline_csv, output_directory, sample_list=None, prote
     output_list = []
     for sample in sample_list:
         log('working on sample: ' + sample, logfile)
-        extracted_sub = extract_skyline_sub(skyline_complete, sample, protein_list=protein_list, isotope=isotope)
+        extracted_sub = extract_skyline_sub(skyline_complete, sample, protein_list=protein_list, peptide_list=peptide_list, isotope=isotope)
         output_list.append(parse_sub_skyline(extracted_sub, sample, q_value=q_value, isotope=isotope, logfile=logfile))
         write_directory = output_directory + sample
         try:
@@ -202,10 +204,17 @@ def parse_skyline(path_to_skyline_csv, output_directory, sample_list=None, prote
             if not choice == 'y':
                 log('exiting parse_input as the desired output directory exists', logfile)
                 raise
-        log('Writing result to: ' + write_directory + '/pd_parsed_report.tsv')
-        output_list[-1].to_csv(write_directory + '/pd_parsed_report.tsv', sep='\t',
-                               columns=['rt_start', 'rt_end', 'peptide_modified_sequence', 'charge',
+        log('Writing result to: ' + write_directory)
+        if batch_size:
+            for b in range(math.ceil(len(output_list[-1])/batch_size)):
+                sub_batch = output_list[-1].iloc[b*batch_size:min((b+1)*batch_size, len(output_list[-1]))]
+                sub_batch.to_csv(f'{write_directory}/pd_parsed_report_batch{str(b)}.tsv', sep='\t',
+                            columns=['rt_start', 'rt_end', 'peptide_modified_sequence', 'charge',
                                         'mz', 'protein_IDs', 'start_pos', 'end_pos'], index=False)
+        else:
+            output_list[-1].to_csv(write_directory + '/pd_parsed_report.tsv', sep='\t',
+                                columns=['rt_start', 'rt_end', 'peptide_modified_sequence', 'charge',
+                                            'mz', 'protein_IDs', 'start_pos', 'end_pos'], index=False)
     return output_list
 
 
@@ -220,6 +229,9 @@ def add_args(parser):
     parser.add_argument('--protein_list', nargs='*', default=None,
                         help='An optional list of the proteins to parse. By default, all proteins in the report are '
                              'analyzed. Each Protein Gene Name separated by a space.')
+    parser.add_argument('--peptide_list', nargs='*', default=None,
+                        help='An optional list of the peptides to parse. By default, all peptides in the report are '
+                             'analyzed. Each peptide sequence separated by a space.')
     parser.add_argument('--isotope', default='light', help='Be default, it is assumed that the report contains a light '
                                                            'isotope (no special labeling), if this field is not present'
                                                            'in the report, you can specify a different field here '
@@ -235,7 +247,7 @@ def main(args):
     log('\n****INITIATING****', args.logfile)
     log('executed command: ' + " ".join(sys.argv), args.logfile)
     sample_list = args.sample_list
-    parse_skyline(args.input, sample_list=sample_list, protein_list=args.protein_list,
+    parse_skyline(args.input, sample_list=sample_list, protein_list=args.protein_list, peptide_list = args.peptide_list,
                   isotope=args.isotope, q_value=args.q_value,
                   output_directory=args.output_directory, logfile=args.logfile)
     log('\n++++COMPLETED parse_input++++\n\n', args.logfile)

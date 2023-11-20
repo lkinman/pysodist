@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 @author: Joey Davis <jhdavis@mit.edu> jhdavislab.org
+@author: Laurel Kinman
 @version: 0.0.4
 """
 
@@ -8,9 +9,12 @@ import pysodist.commands.parse_input as parse_input
 import pysodist.commands.extract_spectra as extract_spectra
 import pysodist.commands.run_isodist as run_isodist
 import pysodist.commands.plot_spectra as plot_spectra
+import pysodist.commands.gaussian_filter as gaussian_filter
+from pysodist.utils import utilities
 import pysodist
 import os
 import argparse
+import glob
 import pandas as pd
 import math
 import subprocess
@@ -25,20 +29,20 @@ def add_args(parser):
                                      'mz64 --inten32 --noindex --filter "msLevel 1" --zlib')
     parser.add_argument('sample_name', help='name of the sample within the skyline report to be analyzed.')
     parser.add_argument('isodist_command', help='exact fortran command to execute. e.g. C:\isodist\isodist.exe')
-    parser.add_argument('atomfile',
-                        help='Specify the path to the atom definition file (e.g. exp_atom_defs.txt). You will likely '
-                             'not need to modify this file.')
-    parser.add_argument('resfile', help='Specify the path to the residue labeling file - you will likely need to edit '
-                                        'this file based on your labeling scheme.\ Note that your output will use the '
-                                        'name of this file to ensure you know which model file produced which output.')
+    
+    #optional arguments
+    parser.add_argument('--test_peptide_list', default = None, help = 'list of peptides to use in testing pysodist '
+                            'before full run; if provided, pysodist will run through test pipeline rather than full')
 
-    # fortran isodist specific parser.add_argument('--batch_size', default=50, type=int, help='Number of peptides to
-    # be fit in each batch by isodist.')
+    # isodist/pysodist specific 
     parser.add_argument('--threads', default=4, type=int,
                         help='number of threads to use. typically 1 less than the number of cores available. Default=4')
     parser.add_argument('--wait_time', default=60, type=int,
                         help='number of seconds to wait between each polling to test if the isodist run has finished. '
                              'Default=60 seconds')
+    parser.add_argument('--correlate', nargs = '+', default=None, help='Names of atoms in the residue model that should be considered as correlated')
+    parser.add_argument('--atomfile', default = None, help = 'Path to atom file if overriding auto-generated')
+    parser.add_argument('--resfile', default = None, help = 'Path to res file if overriding auto-generated')
 
     # extract spectra specific
     parser.add_argument('--output_directory', default='./',
@@ -79,121 +83,203 @@ def add_args(parser):
                         help='By default .pdf files for the plots will be saved. This option forces these to not be '
                              'saved.')
 
+    # filtering specific
+    parser.add_argument('--spectrassr', type = float, default = 10, help = 'Spectra SSR to filter scans by')
+    parser.add_argument('--ssr', type = float, default = 1, help = 'Gaussian fitting SSR to filter peptides by')
+    parser.add_argument('--filt', type = str, default = 'AMP_F', help = 'Value to fit and filter by (AMP_U, AMP_L, AMP_F, or sum). Default is AMP_F')
+    parser.add_argument('--plotfilt', type = bool, default = True, help = 'Whether to plot retained and filtered-out spectra')
+
     return parser
 
 
 def main(args):
-    print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
-    print('***stage 1: parsing input file...***')
+    assert args.isodist_command.endswith('isodist') or args.isodist_command.endswith('pysodist_v2.py'), 'Check input isodist_command'
+
+    if args.isodist_command.endswith('isodist'):
+        pythonic = False
+    elif args.isodist_command.endswith('pysodist_v2.py'):
+        pythonic = True
+
     sample_name = args.sample_name.strip()
-    isodist_df = parse_input.parse_skyline(args.input, protein_list=args.protein_list, sample_list=[sample_name],
-                                           isotope=args.isotope, q_value=args.q_value,
-                                           output_directory=args.output_directory, IO=True)[0]
-    print('unique peptides found: ' + str(isodist_df.shape[0]))
-    print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
-    print('***stage 2: extracting spectra...***')
     output_directory = args.output_directory.replace('\\', '/')
-    if output_directory[-1] != '/':
-        output_directory += '/'
-    parsed_report = output_directory + args.sample_name + '/pd_parsed_report.tsv'
-    print('using pysodist report file: ' + parsed_report)
-    assert (os.path.exists(parsed_report) is True)
+    output_directory = utilities.check_dir(output_directory, make = True)
     parsed_mzml = extract_spectra.parse_mzml(args.mzml)
-    sample_output_directory = output_directory + args.sample_name + '/'
-    assert (os.path.exists(sample_output_directory) is True)
-    extract_spectra.extract_spectra(parsed_mzml, parsed_report, sample_output_directory,
-                                    labeling=args.labeling, save_interp_spectra=args.interp_only,
-                                    interp_res=args.interp_res, sum_spectra_only=args.sum_only)
-    print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
-    print('***stage 3: fitting spectra using isodist...***')
-    isodist_input_file = sample_output_directory + 'pd_exported_peaks.tsv'
-    atomfile = args.atomfile.replace('\\', '/')
-    resfile = args.resfile.replace('\\', '/')
     isodist_command = args.isodist_command.replace('\\', '/')
-    resfile_name = resfile.split('/')[-1].split('.txt')[0]
-    isodist_output_csv = sample_output_directory + resfile_name + '_output.csv'
 
-    print('working in directory: ' + sample_output_directory)
-    run_isodist.prep_model_files(sample_output_directory, atomfile, resfile)
-
-    batch_base_path = '/'.join(isodist_input_file.split('/')[:-1]) + '/'
-    batch_df = pd.read_csv(isodist_input_file, sep='\t')
-    num_spectra = batch_df.shape[0]
-    batch_size = math.ceil(num_spectra / args.threads)
-    batch_file_path_list = run_isodist.write_batch_files(batch_df, batch_base_path, batch_size=batch_size)
-
-    in_file_list = []
-    for batch_file_path in batch_file_path_list:
-        batch_file_path = batch_file_path.replace('\\', '/')
-        in_file_list.append(run_isodist.write_isodist_input(batch_file_path, atomfile, resfile))
-
-    csv_list = run_isodist.run_fortran_isodist(in_file_list, isodist_command, threads=args.threads,
-                                               wait_time=args.wait_time)
-    run_isodist.compile_isodist_csvs(csv_list, isodist_output_csv, parsed_pysodist_input=parsed_report)
-    print('cleaning up...')
-    run_isodist.cleanup(isodist_output_csv)
     print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
-    print('***stage 4: generating plots of the results...***')
+    if args.test_peptide_list:
+        print('running parameter-testing pipeline on selected peptides')
+    
+        print('***stage 1: parsing input file...***')
+        isodist_df = parse_input.parse_skyline(args.input, peptide_list = args.test_peptide_list, sample_list=[sample_name],
+                                            isotope=args.isotope, q_value=args.q_value,
+                                            output_directory=output_directory)[0]
+        print('unique peptides found: ' + str(isodist_df.shape[0]))
+        
+        print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+        print('***stage 2: extracting spectra...***')
+        parsed_report = output_directory + args.sample_name + '/pd_parsed_report.tsv'
+        print('using pysodist report file: ' + parsed_report)
+        assert (os.path.exists(parsed_report) is True)
+        
+        sample_output_directory = output_directory + args.sample_name + '/'
+        assert (os.path.exists(sample_output_directory) is True)
+        extract_spectra.extract_spectra(parsed_mzml, parsed_report, sample_output_directory,
+                                        labeling=args.labeling, save_interp_spectra=args.interp_only,
+                                        interp_res=args.interp_res, sum_spectra_only=args.sum_only)
+        
+        print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+        print('***stage 3: running interactive fitter...***')
+        ###INSERT CODE HERE
 
-    isodist_compiled_csv_name = isodist_output_csv.split('/')[-1]
-    isodist_csv_no_extension = isodist_compiled_csv_name.split('.csv')[0]
-    base_folder_name = isodist_output_csv.split('_output.csv')[0]
-    fit_folder = base_folder_name + '_isodist_fits/'
-    isodist_output_folder = base_folder_name + '_isodist_outputs/'
-    isodist_output_csv = isodist_output_folder + isodist_compiled_csv_name
-    print('parsing isodist csv file: ' + isodist_output_csv)
-    isodist_output_pd = plot_spectra.parse_isodist_csv(isodist_output_csv)
 
-    current_ratio_string = plot_spectra.get_current_ratio_string(args.numerator, args.denominator, isodist_output_pd)
-    print('all of the following plots will use current ratio as: ' + current_ratio_string)
-    isodist_output_pd = plot_spectra.set_current_ratio(isodist_output_pd, numerator=args.numerator,
-                                                       denominator=args.denominator)
+        print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+        print('***stage 3: running pysodist on a random batch...***')
+        batch_size = 100
+        isodist_df = parse_input.parse_skyline(args.input, protein_list=args.protein_list, peptide_list = None, sample_list=[sample_name],
+                                            isotope=args.isotope, q_value=args.q_value,
+                                            output_directory=output_directory, batch_size = batch_size)[0]
 
-    plot_output_folder = base_folder_name + '_final_plots/'
-    try:
-        os.mkdir(plot_output_folder)
-    except OSError:
-        print(
-            '...the output directory: ' + plot_output_folder + 'already exists, and files within it may be '
-                                                               'overwritten. continue? [y/n]')
-        choice = input().lower()
-        if not choice == 'y':
-            raise
+        parsed_report = output_directory + args.sample_name + '/pd_parsed_report_batch0.tsv'
+        extract_spectra.extract_spectra(parsed_mzml, parsed_report, sample_output_directory,
+                                        labeling=args.labeling, save_interp_spectra=args.interp_only,
+                                        interp_res=args.interp_res, sum_spectra_only=args.sum_only)
+        isodist_input_file = sample_output_directory + 'pd_exported_peaks.tsv'
+        if args.atomfile:
+            atomfile = args.atomfile.replace('\\', '/') 
+        '''
+        else:
+            atomfile = ###FIX TO REFERENCE AUTO-GENERATED ATOM FILE
+        '''
+        if args.resfile:
+            resfile = args.resfile.replace('\\', '/') 
+        '''    
+        else:
+            resfile = ###FIX TO REFERENCE AUTO-GENERATED RES FILE
+        '''
+        resfile_name = resfile.split('/')[-1].split('.txt')[0]
+        isodist_output_csv = sample_output_directory + resfile_name + '_output.csv'
+        run_isodist.prep_model_files(sample_output_directory, atomfile, resfile) 
+        
+        batch_base_path = '/'.join(isodist_input_file.split('/')[:-1]) + '/'
+        batch_df = pd.read_csv(isodist_input_file, sep='\t')
+        num_spectra = batch_df.shape[0]
+        batch_size = math.ceil(num_spectra / args.threads)
+        batch_file_path_list = run_isodist.write_batch_files(batch_df, batch_base_path, batch_size=batch_size)
 
-    isodist_output_pd.to_csv(plot_output_folder + isodist_csv_no_extension + '_isodist_result.csv')
+        in_file_list = []
+        for batch_file_path in batch_file_path_list:
+            batch_file_path = batch_file_path.replace('\\', '/')
+            in_file_list.append(run_isodist.write_isodist_input(batch_file_path, atomfile, resfile))
 
-    assert not (args.no_png and args.no_pdf)
+        csv_list = run_isodist.run_fortran_isodist(in_file_list, isodist_command, threads=args.threads, wait_time=args.wait_time, pythonic=pythonic, corr_atom = args.correlate)
+        run_isodist.compile_isodist_csvs(csv_list, isodist_output_csv, parsed_pysodist_input=parsed_report)
+        
 
-    print('using fit spectra from directory: ' + fit_folder)
-    all_proteins = list(set(isodist_output_pd['protein'].values))
+        print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+        print('***stage 4: filtering results...***')
+        run_isodist.cleanup(isodist_output_csv)
+        gaussian_filter.run_filtration(args.spectrassr, args.ssr, args.filt, output_directory, args.threads, subset = False, plotfilt = True)
 
-    print('saving plots for ' + str(len(all_proteins)) + ' proteins to: ' + plot_output_folder)
-    all_proteins.sort()
-    for protein in all_proteins:
-        print('plotting spectra for protein: ' + protein)
-        related_spectra = plot_spectra.get_by_protein(isodist_output_pd, protein)
-        plot_spectra.plot_spectra_group(related_spectra, fit_folder, working_path=sample_output_directory,
-                                        numerator=args.numerator,
-                                        denominator=args.denominator, png=not args.no_png,
-                                        pdf=not args.no_pdf, saved_output=plot_output_folder + protein)
-
-    print('calculating and plotting abundances...')
-    plot_spectra.plot_all_ratios(isodist_output_pd, numerator=args.numerator, denominator=args.denominator,
-                                 saved_output_path=plot_output_folder, png=not args.no_png, pdf=not args.no_pdf)
-    print('plotting the csv stat histograms...')
-    plot_spectra.plot_csv_stats(isodist_output_pd, current_ratio_string, output_path=plot_output_folder,
-                                png=not args.no_png, pdf=not args.no_pdf)
-
-    print('copying analysis_template.ipynb jupyter notebook...')
-    out_ipynb = plot_output_folder + 'pysodist_analysis.ipynb'
-    if not os.path.exists(out_ipynb):
-        # noinspection PyProtectedMember
-        root_path = pysodist._ROOT + '/'
-        ipynb = root_path + 'utils/analysis_template.ipynb'
-        cmd = f'cp {ipynb} {out_ipynb}'
-        subprocess.check_call(cmd, shell=True)
+        print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+        print('cleaning up...')
+        run_isodist.cleanup_spectra(isodist_output_csv)
+        
     else:
-        print(f'{out_ipynb} already exists. Skipping')
+        print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+        print('***stage 1: parsing input file...***')
+        sample_name = args.sample_name.strip()
+        batch_size = 100
+        isodist_df = parse_input.parse_skyline(args.input, protein_list=args.protein_list, sample_list=[sample_name],
+                                            isotope=args.isotope, q_value=args.q_value,
+                                            output_directory=output_directory, batch_size = batch_size)[0]
+        print('unique peptides found: ' + str(isodist_df.shape[0]))
+        
+        print('iterating through batches')
+        sample_output_directories = []
+        pep_batch_list = glob.glob(output_directory + args.sample_name + '/pd_parsed_report*.tsv')
+        for parsed_report in pep_batch_list:
+            batch_num = parsed_report.split('parsed_report_batch')[-1].split('.tsv')[0]
+            print(f'working on batch {batch_num}/{str(len(pep_batch_list))}')
+
+            print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+            print('***stage 2: extracting spectra...***')
+            sample_output_directories.append(utilities.check_dir(output_directory + args.sample_name + f'/pep_batch{batch_num}', make = True))
+            extract_spectra.extract_spectra(parsed_mzml, parsed_report, sample_output_directories[-1],
+                                            labeling=args.labeling, save_interp_spectra=args.interp_only,
+                                            interp_res=args.interp_res, sum_spectra_only=args.sum_only)
+            
+            print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+            print('***stage 3: fitting spectra using pysodist...***')
+            isodist_input_file = sample_output_directories[-1] + 'pd_exported_peaks.tsv'
+            
+            if args.atomfile:
+                atomfile = args.atomfile.replace('\\', '/')
+            '''
+            else:
+                atomfile = ### FIX TO USE AUTO-GENERATED ATOMFILE
+            '''
+            if args.resfile:
+                resfile = args.resfile.replace('\\', '/')
+            '''
+            else:
+                resfile = ### FIX TO USE AUTO-GENERATED RESFILE
+            '''
+            resfile_name = resfile.split('/')[-1].split('.txt')[0]
+            isodist_output_csv = sample_output_directories[-1] + resfile_name + '_output.csv'
+            run_isodist.prep_model_files(sample_output_directories[-1], atomfile, resfile)
+
+            batch_base_path = sample_output_directories[-1]
+            batch_df = pd.read_csv(isodist_input_file, sep='\t')
+            num_spectra = batch_df.shape[0]
+            batch_size = math.ceil(num_spectra / args.threads)
+            batch_file_path_list = run_isodist.write_batch_files(batch_df, batch_base_path, batch_size=batch_size)
+
+            in_file_list = []
+            for batch_file_path in batch_file_path_list:
+                batch_file_path = batch_file_path.replace('\\', '/')
+                in_file_list.append(run_isodist.write_isodist_input(batch_file_path, atomfile, resfile))
+
+            csv_list = run_isodist.run_fortran_isodist(in_file_list, isodist_command, threads=args.threads, wait_time=args.wait_time, pythonic=pythonic, corr_atom = args.correlate)
+            run_isodist.compile_isodist_csvs(csv_list, isodist_output_csv, parsed_pysodist_input=parsed_report)
+
+            print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+            print('***stage 4: filtering results...***')
+            run_isodist.cleanup(isodist_output_csv)
+            gaussian_filter.run_filtration(args.spectrassr, args.ssr, args.filt, sample_output_directories[-1], args.threads, subset = False, plotfilt = False)
+
+            print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+            print('cleaning up...')
+            run_isodist.cleanup_spectra(isodist_output_csv)
+
+        print('compiling filtered batch results')
+        all_filtered = pd.DataFrame()
+        for dir in sample_output_directories:
+            filtered = pd.read_csv(dir + 'gaussian_fits/sub_pepscanfilt.csv', index_col = 0)
+            all_filtered = pd.concat([all_filtered, filtered])
+        
+        all_filtered.to_csv('/'.join(sample_output_directories[-1].split('/')[:-2]) + 'filtered_results.csv')
+        print('++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++')
+        print('***stage 5: generating plots of the results...***')
+        #ONCE EVERYTHING ELSE IS RUNNING, DECIDE WHAT TO PLOT HERE
+
+        print('copying analysis_template.ipynb jupyter notebook...')
+        out_ipynb = output_directory + 'pysodist_analysis.ipynb'
+        if not os.path.exists(out_ipynb):
+            # noinspection PyProtectedMember
+            root_path = pysodist._ROOT + '/'
+            ipynb = root_path + 'utils/analysis_template.ipynb'
+            cmd = f'cp {ipynb} {out_ipynb}'
+            subprocess.check_call(cmd, shell=True)
+        else:
+            print(f'{out_ipynb} already exists. Skipping')
+
+
+
+    return
+    
+
+    
 
 
 if __name__ == "__main__":

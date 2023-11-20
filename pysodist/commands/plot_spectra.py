@@ -38,6 +38,8 @@ def parse_isodist_csv(file_path, logfile=None):
     returns: a pandas dataframe with appropriate fields updated.
     """
     parsed_id_output = pd.read_csv(file_path, sep=',')
+    drop_inds = [i for i in range(0, len(parsed_id_output)) if (parsed_id_output['file'][i].count('.') < 3) & ('SUM' not in parsed_id_output['file'][i])]
+    parsed_id_output = parsed_id_output.drop(drop_inds)
     parsed_name_fields = parsed_id_output['file'].str.split('_', expand=True)
     rt_column_index = parsed_name_fields.shape[1] - 1
     parsed_id_output['retention_time'] = parsed_name_fields[rt_column_index]
@@ -99,8 +101,7 @@ def read_spectra(isodist_result, isodist_fit_folder, working_path='./', extensio
                                  '+' + str(isodist_result['z_charge']), isodist_result['retention_time'] + ' mins'])
     return {'data': spectra_pd, 'name': plottable_name, 'isodist_output': isodist_result}
 
-
-def plot_fit(spectral_dict, main_axis, resid_axis, numerator=(defs.AMPU,), denominator=(defs.AMPU, defs.AMPF),
+def plot_fit(spectral_dict, main_axis, resid_axis = None, numerator=(defs.AMPU,), denominator=(defs.AMPU, defs.AMPF), info_box = True,
              ignore_fields=('file', 'protein', 'pep', 'mw', 'z_charge', 'retention_time', 'UID', 'CID', 'clean_RT',
                             'peak_position', 'current_ratio'), fontsize=8, output=None):
     """
@@ -126,12 +127,14 @@ def plot_fit(spectral_dict, main_axis, resid_axis, numerator=(defs.AMPU,), denom
     sns.lineplot(data=spectral_dict['data'], x='m/z', y='fit_int', ax=main_axis, color='orange').set_title(
         spectral_dict['name'])
     sns.scatterplot(data=spectral_dict['data'], x='m/z', y='intensity', marker='x', ax=main_axis, color='black')
-    sns.lineplot(data=spectral_dict['data'], x='m/z', y='resid', ax=resid_axis, color='red')
-    result_string = _parse_result_string(spectral_dict['isodist_output'], numerator=numerator, denominator=denominator,
-                                         ignore_fields=ignore_fields)
-    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-    main_axis.text(0.2, 0.95, result_string, transform=main_axis.transAxes, fontsize=fontsize, verticalalignment='top',
-                   bbox=props)
+    if resid_axis:
+        sns.lineplot(data=spectral_dict['data'], x='m/z', y='resid', ax=resid_axis, color='red')
+    if info_box:
+        result_string = _parse_result_string(spectral_dict['isodist_output'], numerator=numerator, denominator=denominator,
+                                            ignore_fields=ignore_fields)
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        main_axis.text(0.2, 0.95, result_string, transform=main_axis.transAxes, fontsize=fontsize, verticalalignment='top',
+                    bbox=props)
 
     if output is not None:
         plt.savefig(output)
