@@ -233,8 +233,8 @@ def write_isodist_input(batch_file_path, atomfile, resfile, niter=5, sigma=100.0
     with open(in_file_path, 'w') as output:
         output.write('fitit = program options: fitit tryit\n')
         output.write('./' + batch_file_name + ' = batchfile: file containing peptides, chgs, peaks\n')
-        output.write(atomfile + ' = atomfile\n')
-        output.write(resfile + ' = resfile\n')
+        output.write('./model_files/' + atomfile + ' = atomfile\n')
+        output.write('./model_files/' + resfile + ' = resfile\n')
         output.write(str(niter) + ' = niter # of interactions for each round of least squares.\n')
         output.write(str(sigma) + ' sigma std deviation of noise (currently read by not used).\n')
         output.write(str(B) + ' auto = B : initial guess for baseline.\n')

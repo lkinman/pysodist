@@ -128,7 +128,7 @@ N14MASS = 14.0030740048
 N15MASS = 15.0001088982
 
 C12MASS = 12.000000
-C13MASS = 12.003355
+C13MASS = 13.003355
 
 reds = ['#fee5d9', '#fcbba1', '#fc9272', '#fb6a4a', '#de2d26', '#a50f15']
 blues = ['#eff3ff', '#c6dbef', '#93cae1', '#6baed6', '#3182bd', '#08519c']

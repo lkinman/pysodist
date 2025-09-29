@@ -44,7 +44,7 @@ def parse_isodist_csv(file_path, logfile=None):
     rt_column_index = parsed_name_fields.shape[1] - 1
     parsed_id_output['retention_time'] = parsed_name_fields[rt_column_index]
     parsed_id_output['CID'] = parsed_id_output['pep'] + '+' + parsed_id_output['z_charge'].astype(str)
-    parsed_id_output['UID'] = parsed_id_output['CID'] + parsed_id_output['retention_time']
+    parsed_id_output['UID'] = parsed_id_output['CID'] + parsed_id_output['retention_time'].astype(str)
     all_CIDs = list(set(parsed_id_output['CID'].values))
     parsed_id_output['chisq'] = parsed_id_output['chisq'].astype(float)
     parsed_id_output['chisq'] = np.log10(parsed_id_output['chisq'])
@@ -97,8 +97,8 @@ def read_spectra(isodist_result, isodist_fit_folder, working_path='./', extensio
     fit_pd['m/z'] = fit_pd['mass'] / isodist_result['z_charge']
     spectra_pd['fit_int'] = np.interp(spectra_pd['m/z'], fit_pd['m/z'], fit_pd['intensity'])
     spectra_pd['resid'] = spectra_pd['intensity'] - spectra_pd['fit_int']
-    plottable_name = ' | '.join([isodist_result['protein'], isodist_result['pep'],
-                                 '+' + str(isodist_result['z_charge']), isodist_result['retention_time'] + ' mins'])
+    plottable_name = ' | '.join([str(isodist_result['protein']), str(isodist_result['pep']),
+                                 f'+{isodist_result["z_charge"]}', f'{isodist_result["retention_time"]} mins'])
     return {'data': spectra_pd, 'name': plottable_name, 'isodist_output': isodist_result}
 
 def plot_fit(spectral_dict, main_axis, resid_axis = None, numerator=(defs.AMPU,), denominator=(defs.AMPU, defs.AMPF), info_box = True,

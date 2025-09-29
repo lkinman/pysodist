@@ -105,24 +105,28 @@ def extract_spectra(parsed_mzml, parsed_report, output_dir,
                     log('**++** PEPTIDE: ' + str(current_peptide['peptide_modified_sequence']) + ', scan #: ' + str(
                         current_scan_num) + 'has fewer than 4 MS1 points in  m/z range. Skipping this scan.', logfile)
                 else:
-                    interpolation = interp1d(scan_data['mz_data'], scan_data['intensity_data'])
-                    interp_intensity = interpolation(interp_mz_axis)
-                    interp_scan_data = pd.DataFrame({'mz_data': interp_mz_axis, 'intensity_data': interp_intensity})
+                    if (mz_range[0] <= min(scan_data['mz_data'])) | (mz_range[1] >= max(scan_data['mz_data'])):
+                        log('**++** PEPTIDE: ' + str(current_peptide['peptide_modified_sequence']) + ', scan #: ' + str(
+                            current_scan_num) + 'falls outside mz range parsed from mzml. Skipping this scan.', logfile)
+                    else:
+                        interpolation = interp1d(scan_data['mz_data'], scan_data['intensity_data'])
+                        interp_intensity = interpolation(interp_mz_axis)
+                        interp_scan_data = pd.DataFrame({'mz_data': interp_mz_axis, 'intensity_data': interp_intensity})
 
-                    interp_summed_intensity += interp_intensity
+                        interp_summed_intensity += interp_intensity
 
-                    if sum_spectra_only is False:
-                        file_name = peptide_base_name + '_' + str(round(rt_array[current_scan_num], 3))
-                        spectra_string = peaks_dir + file_name + '.tsv'
-                        local_spectra_string = local_peaks_dir + file_name + '.tsv'
-                        if save_interp_spectra:
-                            write_scan(interp_scan_data, spectra_string)
-                        else:
-                            write_scan(select_scan_data, spectra_string)
+                        if sum_spectra_only is False:
+                            file_name = peptide_base_name + '_' + str(round(rt_array[current_scan_num], 3))
+                            spectra_string = peaks_dir + file_name + '.tsv'
+                            local_spectra_string = local_peaks_dir + file_name + '.tsv'
+                            if save_interp_spectra:
+                                write_scan(interp_scan_data, spectra_string)
+                            else:
+                                write_scan(select_scan_data, spectra_string)
 
-                        spectra_dict[file_name] = [current_peptide['peptide_modified_sequence'],
-                                                   str(current_peptide['charge']),
-                                                   local_spectra_string]
+                            spectra_dict[file_name] = [current_peptide['peptide_modified_sequence'],
+                                                    str(current_peptide['charge']),
+                                                    local_spectra_string]
 
             file_name = peptide_base_name + '_SUM'
             spectra_string = peaks_dir + file_name + '.tsv'

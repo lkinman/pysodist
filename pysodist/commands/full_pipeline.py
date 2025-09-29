@@ -48,7 +48,7 @@ def add_args(parser):
     parser.add_argument('--output_directory', default='./',
                         help='Output files will be saved in this folder: 1 directory per sample in the skyline '
                              'report. Default = ./')
-    parser.add_argument('--protein_list', default=None,
+    parser.add_argument('--protein_list', default=None, nargs = '+',
                         help='An optional list of the proteins to parse. By default, all proteins in the report are '
                              'analyzed.')
     parser.add_argument('--isotope', default='light',

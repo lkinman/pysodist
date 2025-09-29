@@ -182,7 +182,7 @@ def run_filtration(spectrassr, ssr, filt, wd, threads, subset = False, plotfilt 
 
     nonsum_id = id_result[id_result['retention_time'] != 'SUM']
     print('Filtering by GW...')
-    gw_filt = nonsum_id[(nonsum_id['gw'] >= 0.01) & (nonsum_id['gw'] <= 1)] ###FIGURE OUT WHETHER WE NEED TO KEEP THIS AND/OR MAKE IT MORE STANDARD/RIGOROUS
+    gw_filt = nonsum_id[nonsum_id['gw'] < 0.5] ###FIGURE OUT WHETHER WE NEED TO KEEP THIS AND/OR MAKE IT MORE STANDARD/RIGOROUS
 
     if subset:
         rand_inds = np.random.choice(gw_filt.index, int(len(gw_filt)/10))
